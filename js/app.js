@@ -1,12 +1,14 @@
 import { watchAuth, signInWithGoogle, signOutUser } from "./auth.js";
 import {
   addRecord, archiveVehicle, changeInviteRole, changeShareRole, claimPendingInvites,
+  createPaymentMethod, deletePaymentMethod, listPaymentMethods, updatePaymentMethod,
   deleteVehiclePermanently,
   createVehicle, listAccessibleVehicles, listVehicleInvites, listVehicleShares,
   loadVehicleData, removeInvite, removeRecord, removeShare, saveRecord,
   shareVehicleByEmail, updateVehicle, upsertUserProfile,
 } from "./firestore.js";
 import { openEntryForm } from "./forms.js";
+import { initPwa } from "./pwa.js";
 import { fuelSummary, filterPeriod } from "./calculations.js";
 import { buildBackup, financialEvents, getFinanceSummary, reportEvents } from "./reports.js";
 import { generatePdf } from "./pdf.js";
@@ -16,7 +18,7 @@ import {
 } from "./utils.js";
 import {
   renderDashboard, renderFinance, renderNoVehicle, renderRecords, renderReports,
-  renderSharing, renderVehicles, viewTitles,
+  renderSharing, renderVehicles, renderPaymentMethods, viewTitles,
 } from "./views.js";
 
 const state = {
@@ -26,6 +28,7 @@ const state = {
   data: { refuels: [], maintenances: [], tires: [], expenses: [], trips: [] },
   shares: [],
   invites: [],
+  paymentMethods: [],
   view: "dashboard",
   financePeriod: "month",
   financeCustomStart: "",
@@ -39,6 +42,7 @@ const content = document.querySelector("#app-content");
 const dialog = document.querySelector("#entry-dialog");
 const vehiclePicker = document.querySelector("#vehicle-picker");
 const recordArrays = ["refuels", "maintenances", "tires", "expenses", "trips"];
+initPwa();
 
 function canEdit() { return Boolean(state.vehicle && ["owner", "editor"].includes(state.vehicle.role)); }
 function canManage() { return Boolean(state.vehicle?.role === "owner"); }
@@ -48,8 +52,8 @@ function updateHeader() {
   document.querySelector("#page-kicker").textContent = state.vehicle?.name ? state.vehicle.name.toUpperCase() : "SEU RESUMO";
   document.querySelectorAll(".nav-item, .mobile-nav button").forEach((button) => button.classList.toggle("active", button.dataset.view === state.view));
   const newButton = document.querySelector("#new-record");
-  newButton.hidden = Boolean(state.vehicle && !canEdit() && state.view !== "vehicles");
-  newButton.innerHTML = state.view === "vehicles" || !state.vehicle ? "<span>＋</span> Novo veículo" : "<span>＋</span> Novo registro";
+  newButton.hidden = Boolean(state.vehicle && !canEdit() && !["vehicles", "payments"].includes(state.view));
+  newButton.innerHTML = state.view === "payments" ? "<span>＋</span> Novo cart\u00e3o" : state.view === "vehicles" || !state.vehicle ? "<span>＋</span> Novo ve\u00edculo" : "<span>＋</span> Novo registro";
 }
 
 function updateVehiclePicker() {
@@ -61,6 +65,10 @@ function updateVehiclePicker() {
 function render() {
   updateHeader();
   updateVehiclePicker();
+  if (state.view === "payments") {
+    content.innerHTML = renderPaymentMethods(state.paymentMethods);
+    return;
+  }
   if (state.view === "vehicles") {
     content.innerHTML = renderVehicles(state.vehicles, state.vehicle?.id, state.user?.uid, true);
     return;
@@ -128,6 +136,7 @@ async function handleAuth(user) {
     state.vehicle = null;
     state.shares = [];
     state.invites = [];
+    state.paymentMethods = [];
     state.data = { refuels: [], maintenances: [], tires: [], expenses: [], trips: [] };
     localStorage.removeItem("rota-active-vehicle");
     authMessage.textContent = "Entre com sua conta Google para continuar.";
@@ -140,6 +149,13 @@ async function handleAuth(user) {
   const avatar = document.querySelector("#user-avatar");
   avatar.src = user.photoURL || `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" rx="32" fill="#dbe9dd"/><text x="50%" y="56%" text-anchor="middle" font-family="sans-serif" font-size="25" fill="#356147">${(user.displayName || "U")[0]}</text></svg>`)}`;
   const startupWarnings = [];
+  state.paymentMethods = [];
+  try {
+    state.paymentMethods = await listPaymentMethods(user.uid);
+  } catch (error) {
+    console.error("Payment methods could not be loaded:", error);
+    startupWarnings.push({ step: "Formas de pagamento", error });
+  }
   try { await upsertUserProfile(user); }
   catch (error) {
     console.error("User profile sync failed:", error);
@@ -177,13 +193,13 @@ function setView(view) {
 }
 
 function openForm(kind, record = null, initialValues = null) {
-  if (kind !== "vehicles" && !state.vehicle) {
+  if (kind !== "vehicles" && kind !== "paymentMethods" && !state.vehicle) {
     toast("Adicione um veículo primeiro", "Depois você poderá registrar despesas e viagens.", "error");
     state.view = "vehicles";
     render();
     return;
   }
-  if (kind !== "vehicles" && !canEdit()) {
+  if (kind !== "vehicles" && kind !== "paymentMethods" && !canEdit()) {
     toast("Acesso somente para leitura", "Peça ao proprietário uma permissão de editor para registrar dados.", "error");
     return;
   }
@@ -191,11 +207,18 @@ function openForm(kind, record = null, initialValues = null) {
     dialog,
     vehicle: state.vehicle,
     trips: state.data.trips,
+    paymentMethods: state.paymentMethods,
     record,
     initialValues,
     onSubmit: async (submitted) => {
       const { _collection, _tripId, ...payload } = submitted;
-      if (_collection === "vehicles") {
+      if (_collection === "paymentMethods") {
+        if (record) await updatePaymentMethod(state.user.uid, record.id, payload);
+        else await createPaymentMethod(state.user.uid, payload);
+        state.paymentMethods = await listPaymentMethods(state.user.uid);
+        state.view = "payments";
+        toast(record ? "Cart\u00e3o atualizado" : "Cart\u00e3o cadastrado", "Somente os quatro \u00faltimos d\u00edgitos ficam salvos.");
+      } else if (_collection === "vehicles") {
         if (record) {
           await updateVehicle(record.id, payload);
           await reloadVehicles(record.id);
@@ -253,8 +276,8 @@ function updateReportPreview() {
   const title = ({ complete: "Relatório completo", fuel: "Abastecimentos e consumo", maintenance: "Manutenções", tires: "Pneus", expenses: "Despesas" })[type] || "Relatório";
   const label = period === "custom" ? `${formatDate(customStart)} a ${formatDate(customEnd)}` : periodLabel(period);
   const total = events.reduce((sum, item) => sum + item.amount, 0);
-  const rows = events.slice(0, 80).map((item) => `<tr><td>${formatDate(item.date)}</td><td>${escapeHtml(item.category)}</td><td>${escapeHtml(item.detail)}</td><td>${item.odometer ? `${Number(item.odometer).toLocaleString("pt-BR")} km` : "—"}</td><td>${money(item.amount)}</td></tr>`).join("");
-  preview.innerHTML = `<p class="section-kicker">PRÉVIA DO RELATÓRIO</p><h2>${escapeHtml(state.vehicle?.name || "Veículo")}</h2><p class="report-meta">${escapeHtml(title)} · ${escapeHtml(label)} · ${events.length} lançamento(s)</p><div class="report-stats"><div class="report-stat"><span>Gasto no recorte</span><strong>${money(total)}</strong></div><div class="report-stat"><span>Registros</span><strong>${events.length}</strong></div><div class="report-stat"><span>Consumo médio</span><strong>${fuelSummary(state.data.refuels).averageKmPerLiter ? `${decimal(fuelSummary(state.data.refuels).averageKmPerLiter)} km/L` : "Dados insuficientes"}</strong></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>Km</th><th>Valor</th></tr></thead><tbody>${rows || `<tr><td colspan="5"><div class="table-empty">Sem lançamentos para este filtro.</div></td></tr>`}</tbody></table>${events.length > 80 ? `<p class="comparison-note">A prévia mostra 80 itens; a exportação inclui todos os registros carregados.</p>` : ""}</div>`;
+  const rows = events.slice(0, 80).map((item) => `<tr><td>${formatDate(item.date)}</td><td>${escapeHtml(item.category)}</td><td>${escapeHtml(item.detail)}</td><td>${escapeHtml(item.paymentMethod || "\u2014")}</td><td>${item.odometer ? `${Number(item.odometer).toLocaleString("pt-BR")} km` : "—"}</td><td>${money(item.amount)}</td></tr>`).join("");
+  preview.innerHTML = `<p class="section-kicker">PRÉVIA DO RELATÓRIO</p><h2>${escapeHtml(state.vehicle?.name || "Veículo")}</h2><p class="report-meta">${escapeHtml(title)} · ${escapeHtml(label)} · ${events.length} lançamento(s)</p><div class="report-stats"><div class="report-stat"><span>Gasto no recorte</span><strong>${money(total)}</strong></div><div class="report-stat"><span>Registros</span><strong>${events.length}</strong></div><div class="report-stat"><span>Consumo médio</span><strong>${fuelSummary(state.data.refuels).averageKmPerLiter ? `${decimal(fuelSummary(state.data.refuels).averageKmPerLiter)} km/L` : "Dados insuficientes"}</strong></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Data</th><th>Categoria</th><th>Descrição</th><th>Pagamento</th><th>Km</th><th>Valor</th></tr></thead><tbody>${rows || `<tr><td colspan="6"><div class="table-empty">Sem lançamentos para este filtro.</div></td></tr>`}</tbody></table>${events.length > 80 ? `<p class="comparison-note">A prévia mostra 80 itens; a exportação inclui todos os registros carregados.</p>` : ""}</div>`;
 }
 
 async function runReport(action) {
@@ -263,8 +286,8 @@ async function runReport(action) {
   const label = period === "custom" ? `${formatDate(customStart)} a ${formatDate(customEnd)}` : periodLabel(period);
   if (action === "pdf") generatePdf({ vehicle: state.vehicle, events, title: reportTitle, periodLabel: label, summary: getFinanceSummary(state.data) });
   if (action === "print") { updateReportPreview(); window.print(); }
-  if (action === "csv") csvDownload(`rota-${type}-${new Date().toISOString().slice(0, 10)}.csv`, [["Data", "Categoria", "Descrição", "Quilometragem", "Valor"], ...events.map((item) => [item.date, item.category, item.detail, item.odometer || "", item.amount])]);
-  if (action === "json") jsonDownload(`rota-backup-${(state.vehicle.name || "veiculo").toLowerCase().replace(/[^a-z0-9]+/g, "-")}.json`, buildBackup(state.vehicle, state.data));
+  if (action === "csv") csvDownload(`rota-${type}-${new Date().toISOString().slice(0, 10)}.csv`, [["Data", "Categoria", "Descri\u00e7\u00e3o", "Forma de pagamento", "Quilometragem", "Valor"], ...events.map((item) => [item.date, item.category, item.detail, item.paymentMethod || "", item.odometer || "", item.amount])]);
+  if (action === "json") jsonDownload(`rota-backup-${(state.vehicle.name || "veiculo").toLowerCase().replace(/[^a-z0-9]+/g, "-")}.json`, buildBackup(state.vehicle, state.data, state.paymentMethods));
 }
 
 content.addEventListener("click", async (event) => {
@@ -301,6 +324,24 @@ content.addEventListener("click", async (event) => {
       render();
       toast("Veículo excluído", "Os registros associados também foram removidos.");
     } catch (error) { toast("Não foi possível excluir o veículo", errorMessage(error), "error"); }
+    return;
+  }
+  const editPaymentMethod = event.target.closest("[data-edit-payment-method]");
+  if (editPaymentMethod) {
+    const method = state.paymentMethods.find((item) => item.id === editPaymentMethod.dataset.editPaymentMethod);
+    if (method) openForm("paymentMethods", method);
+    return;
+  }
+  const removePaymentMethodButton = event.target.closest("[data-delete-payment-method]");
+  if (removePaymentMethodButton) {
+    const method = state.paymentMethods.find((item) => item.id === removePaymentMethodButton.dataset.deletePaymentMethod);
+    if (!method || !confirm(`Remover o cart\u00e3o ${method.name}? Os registros anteriores manterao a forma de pagamento.`)) return;
+    try {
+      await deletePaymentMethod(state.user.uid, method.id);
+      state.paymentMethods = state.paymentMethods.filter((item) => item.id !== method.id);
+      render();
+      toast("Cart\u00e3o removido", "Os registros anteriores foram preservados.");
+    } catch (error) { toast("Nao foi possivel remover o cartao", errorMessage(error), "error"); }
     return;
   }
   const edit = event.target.closest("[data-edit-path]");
@@ -393,6 +434,7 @@ vehiclePicker.addEventListener("change", async () => {
   catch (error) { toast("Não foi possível carregar o veículo", errorMessage(error), "error"); }
 });
 document.querySelector("#new-record").addEventListener("click", () => {
+  if (state.view === "payments") { openForm("paymentMethods"); return; }
   const defaults = { dashboard: "refuels", vehicles: "vehicles", finance: "expenses", sharing: "vehicles", reports: "expenses" };
   if (!state.vehicle) { openForm("vehicles"); return; }
   openForm(defaults[state.view] || state.view);
