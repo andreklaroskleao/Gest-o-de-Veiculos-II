@@ -1,4 +1,4 @@
-import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signInWithRedirect, signOut } from "firebase/auth";
+import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth";
 import { auth } from "./firebase-init.js";
 
 const provider = new GoogleAuthProvider();
@@ -9,7 +9,8 @@ export function watchAuth(callback) {
 }
 
 export async function signInWithGoogle() {
-  if (matchMedia("(max-width: 700px)").matches) return signInWithRedirect(auth, provider);
+  // The app is hosted outside Firebase Hosting; popup avoids the cross-site
+  // storage dependency that can prevent redirect sign-in on mobile browsers.
   return signInWithPopup(auth, provider);
 }
 
