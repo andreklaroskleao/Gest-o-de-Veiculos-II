@@ -37,7 +37,6 @@ const application = document.querySelector("#application");
 const authMessage = document.querySelector("#auth-message");
 const content = document.querySelector("#app-content");
 const dialog = document.querySelector("#entry-dialog");
-const dialogContent = document.querySelector("#dialog-content");
 const vehiclePicker = document.querySelector("#vehicle-picker");
 const recordArrays = ["refuels", "maintenances", "tires", "expenses", "trips"];
 
@@ -174,7 +173,7 @@ function openForm(kind, record = null, initialValues = null) {
     return;
   }
   openEntryForm(kind, {
-    dialog: dialogContent,
+    dialog,
     vehicle: state.vehicle,
     trips: state.data.trips,
     record,
