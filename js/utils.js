@@ -23,6 +23,7 @@ export function toast(title, detail = "", type = "success") {
 }
 
 export function errorMessage(error) {
+  if (/failed-precondition$/.test(error?.code || "") && error?.message) return error.message;
   const known = {
     "auth/popup-closed-by-user": "A janela de login foi fechada antes da conclusão.",
     "auth/popup-blocked": "O navegador bloqueou a janela de login. Tente novamente.",
