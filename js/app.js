@@ -139,13 +139,28 @@ async function handleAuth(user) {
   document.querySelector("#user-email").textContent = user.email || "";
   const avatar = document.querySelector("#user-avatar");
   avatar.src = user.photoURL || `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" rx="32" fill="#dbe9dd"/><text x="50%" y="56%" text-anchor="middle" font-family="sans-serif" font-size="25" fill="#356147">${(user.displayName || "U")[0]}</text></svg>`)}`;
+  const startupWarnings = [];
+  try { await upsertUserProfile(user); }
+  catch (error) {
+    console.error("User profile sync failed:", error);
+    startupWarnings.push({ step: "Perfil", error });
+  }
+  let claimedInvites = 0;
+  try { claimedInvites = await claimPendingInvites(user); }
+  catch (error) {
+    console.error("Pending invite lookup failed:", error);
+    startupWarnings.push({ step: "Convites", error });
+  }
   try {
-    await upsertUserProfile(user);
-    const claimedInvites = await claimPendingInvites(user);
     await reloadVehicles(localStorage.getItem("rota-active-vehicle"));
     render();
+    if (startupWarnings.length) {
+      const details = startupWarnings.map(({ step, error }) => `${step}: ${errorMessage(error)}`).join(" | ");
+      toast("Dados auxiliares nao sincronizados", details, "error");
+    }
     if (claimedInvites) toast("Acesso compartilhado ativado", `${claimedInvites} veículo(s) foi(ram) adicionado(s) à sua garagem.`);
   } catch (error) {
+    console.error("Vehicle and record loading failed:", error);
     toast("Não foi possível carregar seus dados", errorMessage(error), "error");
     content.innerHTML = `<div class="empty-state"><div class="empty-illustration">!</div><h3>Falha ao conectar ao Firebase</h3><p>${escapeHtml(errorMessage(error))}</p><button class="button button-primary" data-retry>↻ Tentar novamente</button></div>`;
   }
