@@ -1,5 +1,5 @@
 import { todayISO, escapeHtml } from "./utils.js";
-import { validateRecord, validateVehicle } from "./validation.js";
+import { validatePaymentMethod, validateRecord, validateVehicle } from "./validation.js";
 
 const fuelOptions = [["gasolina-comum", "Gasolina comum"], ["gasolina-aditivada", "Gasolina aditivada"], ["etanol", "Etanol"], ["diesel", "Diesel"], ["gnv", "GNV"], ["outro", "Outro"]];
 const maintenanceOptions = ["Motor", "Lubrificação", "Freios", "Suspensão", "Pneus", "Elétrica", "Ar-condicionado", "Transmissão", "Direção", "Arrefecimento", "Funilaria", "Estética", "Documentação", "Outros"].map((item) => [item.toLowerCase(), item]);
@@ -22,6 +22,12 @@ const definitions = {
     { id: "tirePressure", label: "Pressão recomendada (PSI)", type: "number", min: 0, step: "0.1" },
     { id: "notes", label: "Observações", type: "textarea", full: true },
   ] },
+  paymentMethods: { title: "Cadastrar cart\u00e3o", subtitle: "Os dados identificadores do cartao ficam na sua conta.", collection: "paymentMethods", fields: [
+    { id: "name", label: "Nome do cart\u00e3o", required: true, placeholder: "Ex.: Cartao principal" },
+    { id: "institution", label: "Institui\u00e7\u00e3o financeira", required: true, placeholder: "Ex.: Banco ou emissor" },
+    { id: "cardNumber", label: "N\u00famero do cart\u00e3o", type: "card-number", required: true, help: "Por seguran\u00e7a, somente os quatro \u00faltimos d\u00edgitos ser\u00e3o guardados. Nunca informe CVV." },
+    { id: "expiry", label: "Validade", type: "month", required: true },
+  ] },
   refuels: { title: "Registrar abastecimento", subtitle: "O consumo só aparece após dados suficientes entre tanques cheios.", collection: "refuels", fields: [
     { id: "date", label: "Data", type: "date", required: true, value: todayISO() },
     { id: "odometer", label: "Quilometragem (km)", type: "number", min: 0, step: 1, required: true },
@@ -31,6 +37,7 @@ const definitions = {
     { id: "pricePerLiter", label: "Preço por litro (R$)", type: "number", min: 0.01, step: "0.001", required: true },
     { id: "total", label: "Valor total (R$)", type: "number", min: 0.01, step: "0.01", required: true },
     { id: "station", label: "Posto" },
+    { id: "paymentMethod", label: "Forma de pagamento", type: "payment-method" },
     { id: "fullTank", label: "Tanque cheio", type: "checkbox", full: true },
     { id: "notes", label: "Observações", type: "textarea", full: true },
   ] },
@@ -42,7 +49,7 @@ const definitions = {
     { id: "service", label: "Serviço", required: true, placeholder: "Ex.: Troca de óleo ou correia dentada" },
     { id: "amount", label: "Valor (R$)", type: "number", min: 0, step: "0.01", required: true },
     { id: "workshop", label: "Oficina" },
-    { id: "paymentMethod", label: "Forma de pagamento", placeholder: "Ex.: Pix" },
+    { id: "paymentMethod", label: "Forma de pagamento", type: "payment-method" },
     { id: "nextDate", label: "Próxima data", type: "date" },
     { id: "nextOdometer", label: "Próxima quilometragem", type: "number", min: 0, step: 1 },
     { id: "details", label: "Detalhes do serviço", type: "textarea", full: true },
@@ -58,6 +65,7 @@ const definitions = {
     { id: "tireSize", label: "Medida" },
     { id: "position", label: "Posição", placeholder: "Ex.: dianteiro esquerdo" },
     { id: "amount", label: "Valor total (R$)", type: "number", min: 0, step: "0.01", required: true },
+    { id: "paymentMethod", label: "Forma de pagamento", type: "payment-method" },
     { id: "details", label: "Detalhes", type: "textarea", full: true },
   ] },
   expenses: { title: "Registrar despesa", subtitle: "Vincule o gasto a uma viagem quando fizer parte do percurso.", collection: "expenses", fields: [
@@ -66,7 +74,7 @@ const definitions = {
     { id: "category", label: "Categoria", type: "select", required: true, options: expenseOptions, allowCustom: true },
     { id: "description", label: "Descrição", required: true },
     { id: "amount", label: "Valor (R$)", type: "number", min: 0, step: "0.01", required: true },
-    { id: "paymentMethod", label: "Forma de pagamento" },
+    { id: "paymentMethod", label: "Forma de pagamento", type: "payment-method" },
     { id: "tripId", label: "Viagem relacionada", type: "trip-select" },
     { id: "notes", label: "Observações", type: "textarea", full: true },
   ] },
@@ -83,15 +91,62 @@ const definitions = {
   ] },
 };
 
+const commonPaymentMethods = [
+  ["method:pix", "Pix"], ["method:dinheiro", "Dinheiro"],
+  ["method:transferencia", "Transfer\u00eancia banc\u00e1ria"], ["method:boleto", "Boleto"],
+  ["method:carteira-digital", "Carteira digital"], ["method:outro", "Outro"],
+];
+
+function paymentCardLabel(method) {
+  return `Cart\u00e3o - ${method.name} - ${method.institution} - final ${method.lastFour}`;
+}
+
+function paymentChoiceFor(record = {}, paymentMethods = []) {
+  if (record.paymentMethodId && paymentMethods.some((item) => item.id === record.paymentMethodId)) return `card:${record.paymentMethodId}`;
+  const existing = String(record.paymentMethod || "");
+  const common = commonPaymentMethods.find(([, label]) => label.toLowerCase() === existing.toLowerCase());
+  return common ? common[0] : existing ? `legacy:${existing}` : "";
+}
+
+function applyPaymentChoice(data, paymentMethods) {
+  const selected = String(data.paymentMethod || "");
+  if (selected.startsWith("card:")) {
+    const paymentMethodId = selected.slice(5);
+    const method = paymentMethods.find((item) => item.id === paymentMethodId);
+    data.paymentMethodId = paymentMethodId;
+    data.paymentMethod = method ? paymentCardLabel(method) : "";
+  } else if (selected.startsWith("method:")) {
+    data.paymentMethodId = "";
+    data.paymentMethod = commonPaymentMethods.find(([value]) => value === selected)?.[1] || "";
+  } else if (selected.startsWith("legacy:")) {
+    data.paymentMethodId = "";
+    data.paymentMethod = selected.slice(7);
+  } else {
+    data.paymentMethodId = "";
+    data.paymentMethod = "";
+  }
+}
+
 function valueFor(field, record = {}) {
   if (record[field.id] != null) return record[field.id];
   return field.value ?? "";
 }
 
-function fieldMarkup(field, record, trips) {
+function fieldMarkup(field, record, trips, paymentMethods) {
   const value = valueFor(field, record);
   const required = field.required ? "required" : "";
   const full = field.full ? " full" : "";
+  if (field.type === "payment-method") {
+    const selected = paymentChoiceFor(record, paymentMethods);
+    const options = [["", "N\u00e3o informado"], ...commonPaymentMethods, ...paymentMethods.map((item) => [`card:${item.id}`, paymentCardLabel(item)])];
+    if (selected.startsWith("legacy:")) options.push([selected, selected.slice(7)]);
+    return `<div class="form-field${full}"><label for="field-${field.id}">${escapeHtml(field.label)}</label><select id="field-${field.id}" name="${field.id}">${options.map(([key, label]) => `<option value="${escapeHtml(key)}" ${key === selected ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select>${paymentMethods.length ? "" : `<small class="form-help">Cadastre seus cart\u00f5es na area Formas de pagamento.</small>`}</div>`;
+  }
+  if (field.type === "card-number") {
+    const requiredNumber = field.required && !record.lastFour ? "required" : "";
+    const help = record.lastFour ? `Cart\u00e3o salvo: final ${escapeHtml(record.lastFour)}. Deixe em branco para manter.` : field.help;
+    return `<div class="form-field${full}"><label for="field-${field.id}">${escapeHtml(field.label)}${requiredNumber ? " *" : ""}</label><input id="field-${field.id}" name="${field.id}" type="text" inputmode="numeric" autocomplete="cc-number" maxlength="23" ${requiredNumber} placeholder="0000 0000 0000 0000" /><small class="form-help">${escapeHtml(help || "")}</small></div>`;
+  }
   if (field.type === "checkbox") return `<label class="form-field full checkbox-control"><input id="field-${field.id}" name="${field.id}" type="checkbox" ${value === true ? "checked" : ""} /><span>${escapeHtml(field.label)}</span></label>`;
   if (field.type === "select" || field.type === "trip-select") {
     const options = field.type === "trip-select"
@@ -106,13 +161,13 @@ function fieldMarkup(field, record, trips) {
   return `<div class="form-field${full}"><label for="field-${field.id}">${escapeHtml(field.label)}${field.required ? " *" : ""}</label><input id="field-${field.id}" name="${field.id}" type="${type}" value="${escapeHtml(value)}" ${attrs} />${field.help ? `<small class="form-help">${escapeHtml(field.help)}</small>` : ""}</div>`;
 }
 
-export function openEntryForm(kind, { dialog, vehicle, trips = [], record = null, initialValues = null, onSubmit }) {
+export function openEntryForm(kind, { dialog, vehicle, trips = [], paymentMethods = [], record = null, initialValues = null, onSubmit }) {
   const definition = definitions[kind];
   if (!definition) return;
   const editing = Boolean(record);
-  const title = editing ? `Editar ${definition.title.replace(/^Registrar |^Adicionar /, "").toLowerCase()}` : definition.title;
+  const title = editing ? `Editar ${definition.title.replace(/^Registrar |^Adicionar |^Cadastrar /, "").toLowerCase()}` : definition.title;
   const formId = "entry-form";
-  dialog.innerHTML = `<div class="dialog-head"><div><p class="section-kicker">${escapeHtml(vehicle?.name || "ROTA")}</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(definition.subtitle)}</p></div><button class="dialog-close" type="button" aria-label="Fechar">×</button></div><form id="${formId}" class="dialog-form"><div class="form-grid">${definition.fields.map((field) => fieldMarkup(field, record || initialValues || {}, trips)).join("")}</div><p id="form-error" class="form-error" role="alert"></p><div class="form-actions"><button type="button" class="button button-quiet" data-cancel>Cancelar</button><button type="submit" class="button button-primary">${editing ? "Salvar alterações" : "Salvar registro"}</button></div></form>`;
+  dialog.innerHTML = `<div class="dialog-head"><div><p class="section-kicker">${escapeHtml(vehicle?.name || "ROTA")}</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(definition.subtitle)}</p></div><button class="dialog-close" type="button" aria-label="Fechar">×</button></div><form id="${formId}" class="dialog-form"><div class="form-grid">${definition.fields.map((field) => fieldMarkup(field, record || initialValues || {}, trips, paymentMethods)).join("")}</div><p id="form-error" class="form-error" role="alert"></p><div class="form-actions"><button type="button" class="button button-quiet" data-cancel>Cancelar</button><button type="submit" class="button button-primary">${editing ? "Salvar alterações" : "Salvar registro"}</button></div></form>`;
   const form = dialog.querySelector(`#${formId}`);
   const close = () => dialog.close();
   dialog.querySelector(".dialog-close").addEventListener("click", close);
@@ -151,9 +206,16 @@ export function openEntryForm(kind, { dialog, vehicle, trips = [], record = null
     }
     if (data.total == null && data.liters && data.pricePerLiter) data.total = (Number(data.liters) * Number(data.pricePerLiter)).toFixed(2);
     if (kind === "refuels" && !data.total && data.liters && data.pricePerLiter) data.total = (Number(data.liters) * Number(data.pricePerLiter)).toFixed(2);
-    const validation = kind === "vehicles" ? validateVehicle(data) : validateRecord(kind, data);
+    const validation = kind === "vehicles" ? validateVehicle(data) : kind === "paymentMethods" ? validatePaymentMethod(data, Boolean(record)) : validateRecord(kind, data);
     if (validation) { form.querySelector("#form-error").textContent = validation; return; }
     for (const field of definition.fields) if (field.type === "number" && data[field.id] !== "") data[field.id] = Number(data[field.id]);
+    if (kind === "paymentMethods") {
+      const cardNumber = String(data.cardNumber || "").replace(/\D/g, "");
+      delete data.cardNumber;
+      data.lastFour = cardNumber ? cardNumber.slice(-4) : record.lastFour;
+    } else if (definition.fields.some((field) => field.type === "payment-method")) {
+      applyPaymentChoice(data, paymentMethods);
+    }
     if (kind === "trips") data.distance = Number(data.endOdometer) - Number(data.startOdometer);
     const tripId = data.tripId || "";
     delete data.tripId;
